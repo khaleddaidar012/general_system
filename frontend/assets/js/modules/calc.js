@@ -28,11 +28,17 @@ export function num(v) {
 }
 
 export function materialCost(project) {
-  return (project.materials || []).reduce((s, m) => s + num(m.total), 0);
+  return (project.materials || [])
+    .filter(m => !m.clientBought)
+    .reduce((s, m) => s + num(m.total), 0);
 }
 
 export function contractorCost(project) {
-  return (project.contractors || []).reduce((s, c) => s + num(c.total), 0);
+  const base = (project.contractors || []).reduce((s, c) => s + num(c.total), 0);
+  const fromMaterials = (project.materials || []).reduce((sum, m) => {
+    return sum + (m.workmanships || []).reduce((ws, w) => ws + num(w.amount), 0);
+  }, 0);
+  return base + fromMaterials;
 }
 
 export function contractorPaid(project) {
@@ -167,29 +173,7 @@ export function contractorMaterials(project, contractorId) {
   return (project.materials || []).filter((m) => (m.workmanships || []).some(w => w.contractorId === contractorId));
 }
 
-export function statementData(project) {
-  const materials = (project.materials || []).map((m) => ({
-    ...m,
-    clientBought: Boolean(m.clientBought),
-  }));
-  const materialTotal = materials
-    .filter((m) => !m.clientBought)
-    .reduce((s, m) => s + num(m.total), 0);
-  
-  const workmanshipTotal = materials.reduce((sum, m) => {
-    return sum + (m.workmanships || []).reduce((ws, w) => ws + num(w.amount), 0);
-  }, 0);
-
-  const supervisionAmount = num(project.supervisionAmount ?? project.supervisionPercent);
-  return {
-    materials,
-    materialTotal,
-    workmanshipTotal,
-    supervisionAmount,
-    supervision: supervisionAmount,
-    grandTotal: materialTotal + workmanshipTotal + supervisionAmount,
-  };
-}
+// Removed statementData as it is now calculated inline in statement.js
 
 export function projectProfit(project) {
   const income = moneyIn(all("moneyTransactions").filter((t) => t.projectId === project.id));

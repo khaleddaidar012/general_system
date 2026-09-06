@@ -329,26 +329,34 @@ export async function wipeAll() {
 }
 
 export async function deleteCategories({ projects = false, finance = false, suppliers = false, contractors = false } = {}) {
-  if (finance) {
-    cache.moneyTransactions = [];
-    cache.materialTransactions = [];
-    cache.deductions = [];
-    await db.moneyTransactions.clear();
-    await db.materialTransactions.clear();
-    await db.deductions.clear();
+  // If all categories are selected, just wipe everything
+  if (projects && finance && suppliers && contractors) {
+    await wipeAll();
+  } else {
+    if (finance) {
+      cache.moneyTransactions = [];
+      cache.materialTransactions = [];
+      cache.deductions = [];
+      await db.moneyTransactions.clear();
+      await db.materialTransactions.clear();
+      await db.deductions.clear();
+    }
+    if (projects) {
+      cache.projects = [];
+      cache.materials = [];
+      await db.projects.clear();
+      await db.materials.clear();
+    }
+    if (suppliers) {
+      cache.suppliers = [];
+      await db.people.where("kind").equals("suppliers").delete();
+    }
+    if (contractors) {
+      cache.contractors = [];
+      await db.people.where("kind").equals("contractors").delete();
+    }
   }
-  if (projects) {
-    cache.projects = [];
-    await db.projects.clear();
-  }
-  if (suppliers) {
-    cache.suppliers = [];
-    await db.people.where("kind").equals("suppliers").delete();
-  }
-  if (contractors) {
-    cache.contractors = [];
-    await db.people.where("kind").equals("contractors").delete();
-  }
+  
   if (navigator.onLine) {
     await api.restore(dbSnapshot()).catch(() => {});
   }
@@ -363,57 +371,58 @@ export async function clearAll() {
 
 /* Default seed data — contractors & suppliers */
 const DEFAULT_CONTRACTORS = [
-  { name: "مقاول لين", role: "lean" },
-  { name: "محمد سلطان", role: "wooddoors" },
-  { name: "نصار الديب", role: "woodcladding" },
-  { name: "محمد الحمشبي", role: "marble" },
-  { name: "مصطفى (تكسير)", role: "demolition" },
-  { name: "عم زكريا", role: "insulation" },
-  { name: "مصطفى (عزل)", role: "insulation" },
-  { name: "عم هاني السباك", role: "insulplumb" },
   { name: "عم هاني (مقاول سباكة)", role: "plumbing" },
-  { name: "محمد بلال", role: "fireworks" },
-  { name: "أحمد وهبة", role: "ironwork" },
-  { name: "عبد الرحمن", role: "carpentry" },
-  { name: "إبراهيم السيد أحمد", role: "electrical" },
-  { name: "حامد العلمي", role: "gypsum" },
-  { name: "أبو هبة (جبس)", role: "gypsum" },
-  { name: "أبو يوسف", role: "painting" },
-  { name: "عبده الفار", role: "painting" },
-  { name: "حسام عبد الواحد", role: "painting" },
-  { name: "حسام الزرقا", role: "painting" },
-  { name: "إيهاب جمعة", role: "plastering" },
-  { name: "محمود الحفية", role: "plastering" },
   { name: "سرور (محارة)", role: "plastering" },
-  { name: "عم سليمان البحري", role: "plastering" },
+  { name: "محمد الحمشبي", role: "marble" },
   { name: "إبراهيم (مباني)", role: "masonry" },
-  { name: "عم سرور (مباني)", role: "masonry" },
-  { name: "شركة الأقصى", role: "hvac" },
-  { name: "كريم الشناوي", role: "tiles" },
-  { name: "إبراهيم (مبلط)", role: "tiles" },
-  { name: "السعيد", role: "aluminum" },
-  { name: "معتز", role: "aluminum" },
   { name: "ميكانيوم", role: "kitchens" },
+  { name: "شركة الأقصى", role: "hvac" },
+  { name: "عبده الفار", role: "painting" },
+  { name: "إبراهيم السيد أحمد", role: "electrical" },
+  { name: "مصطفى (تكسير)", role: "demolition" },
+  { name: "أبو هبة (جبس)", role: "gypsum" },
+  { name: "عم زكريا", role: "insulation" },
+  { name: "مقاول لين", role: "lean" },
+  { name: "نصار الديب", role: "woodcladding" },
+  { name: "عم هاني السباك", role: "insulplumb" },
+  { name: "عم سليمان البحري", role: "plastering" },
+  { name: "أحمد وهبة", role: "ironwork" },
+  { name: "السعيد", role: "aluminum" },
+  { name: "محمود الحفية", role: "plastering" },
+  { name: "عبد الرحمن", role: "carpentry" },
+  { name: "محمد سلطان", role: "wooddoors" },
+  { name: "إبراهيم (مبلط)", role: "tiles" },
+  { name: "كريم الشناوي", role: "tiles" },
+  { name: "أبو يوسف", role: "painting" },
+  { name: "محمد بلال", role: "fireworks" },
+  { name: "إيهاب جمعة", role: "plastering" },
+  { name: "مصطفى (عزل)", role: "insulation" },
+  { name: "عم سرور (مباني)", role: "masonry" },
+  { name: "معتز", role: "aluminum" },
+  { name: "حسام عبد الواحد", role: "painting" },
+  { name: "حامد العلمي", role: "gypsum" },
+  { name: "حسام الزرقا", role: "painting" }
 ];
 
 const DEFAULT_SUPPLIERS = [
+  { name: "هشام الشربيني", supplies: ["توريدات كهرباء"], notes: "" },
+  { name: "الشربيني (سيراميك)", supplies: ["سيراميك"], notes: "" },
+  { name: "القطان", supplies: ["سيراميك"], notes: "" },
+  { name: "خالد دعيدر", supplies: [], notes: "" },
+  { name: "أبو العز", supplies: ["سيراميك"], notes: "" },
+  { name: "ألفا", supplies: ["مواد عزل"], notes: "" },
   { name: "هيثم أبو العنيين", supplies: ["بضاعة سباكة"], notes: "دمياط" },
-  { name: "عبد العزيز السلاب", supplies: ["بضاعة سباكة"], notes: "القاهرة" },
-  { name: "هشام الشربيني", supplies: ["توريدات كهرباء"] },
-  { name: "ألفا", supplies: ["مواد عزل"] },
-  { name: "محمد أشرف", supplies: ["مواد عزل"] },
-  { name: "مورد سيراميك علوان", supplies: ["سيراميك"] },
-  { name: "القطان", supplies: ["سيراميك"] },
-  { name: "أبو العز", supplies: ["سيراميك"] },
-  { name: "أبو الهدى", supplies: ["سيراميك"] },
-  { name: "الشربيني (سيراميك)", supplies: ["سيراميك"] },
+  { name: "مورد سيراميك علوان", supplies: ["سيراميك"], notes: "" },
+  { name: "محمد أشرف", supplies: ["مواد عزل"], notes: "" },
+  { name: "أبو الهدى", supplies: ["سيراميك"], notes: "" },
+  { name: "عبد العزيز السلاب", supplies: ["بضاعة سباكة"], notes: "القاهرة" }
 ];
 
 export async function seedDefaultData() {
   const contractorCount = await db.people.where("kind").equals("contractors").count();
   const supplierCount = await db.people.where("kind").equals("suppliers").count();
   
-  if (contractorCount === 0 && !localStorage.getItem("spark_seed_done_v2")) {
+  if (contractorCount === 0) {
     const existingNames = new Set(all("contractors").map((c) => c.name));
     for (const c of DEFAULT_CONTRACTORS) {
       if (!existingNames.has(c.name)) {
@@ -430,7 +439,7 @@ export async function seedDefaultData() {
     }
   }
 
-  if (supplierCount === 0 && !localStorage.getItem("spark_seed_done_v2")) {
+  if (supplierCount === 0) {
     const existingNames = new Set(all("suppliers").map((s) => s.name));
     for (const s of DEFAULT_SUPPLIERS) {
       if (!existingNames.has(s.name)) {
@@ -446,7 +455,6 @@ export async function seedDefaultData() {
         });
       }
     }
-    localStorage.setItem("spark_seed_done_v2", "1");
   }
 }
 

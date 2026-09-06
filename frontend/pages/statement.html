@@ -77,8 +77,7 @@
           <thead>
             <tr>
               <th data-i18n="statement.material">Material</th>
-              <th data-i18n="statement.qty">Qty</th>
-              <th>تكلفة الوحدة | الإجمالي</th>
+              <th>الإجمالي</th>
               <th>المصنعية</th>
               <th class="is-center" data-i18n="statement.clientBought">Purchased by the client</th>
               <th class="is-center no-print" data-i18n="statement.remove">Remove</th>
@@ -105,8 +104,19 @@
           <span data-i18n="statement.workmanshipTotal">Workmanship Total</span>
           <span id="statementWorkmanshipTotal">0</span>
         </div>        <div class="statement-summary-row">
-          <span data-i18n="statement.supervisionValue">Supervision Value</span>
-          <input class="form-input statement-supervision-input" id="statementSupervision" type="number" min="0" step="0.01" value="0" />
+          <span>إشراف علي خامات العميل</span>
+          <span id="statementClientSupervisionTotal">0</span>
+        </div>
+        <div class="statement-summary-row">
+          <span>نسبة الإشراف العام / General Supervision %</span>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <input class="form-input statement-supervision-input" id="statementSupervision" type="number" min="0" step="0.01" value="0" style="width: 80px;" />
+            <span>%</span>
+          </div>
+        </div>
+        <div class="statement-summary-row">
+          <span>قيمة الإشراف العام / General Supervision Value</span>
+          <span id="statementSupervisionValue">0</span>
         </div>
         <div class="statement-summary-row is-total">
           <span data-i18n="statement.grandTotal">Grand Total</span>

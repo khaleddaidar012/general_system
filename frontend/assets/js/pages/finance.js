@@ -31,9 +31,8 @@ const PERSON_TYPE_LABELS = {
 
 function renderSummary() {
   const txns = all("moneyTransactions");
-  const material = all("materialTransactions");
   const incoming = moneyIn(txns);
-  const outgoing = moneyOut(txns) + materialPurchases(material);
+  const outgoing = moneyOut(txns);
   document.getElementById("financeIn").textContent = formatMoney(incoming);
   document.getElementById("financeOut").textContent = formatMoney(outgoing);
   document.getElementById("financeNet").textContent = formatMoney(incoming - outgoing);
@@ -375,24 +374,7 @@ function renderHistory() {
     };
   });
 
-  const purchaseRows = all("materialTransactions")
-    .filter((t) => t.direction === "in" && num(t.total) > 0)
-    .map((t) => {
-      const project = supplierProjectName(t.projectId);
-      return {
-        createdAt: t.createdAt,
-        isIn: false,
-        amount: "-" + formatMoney(t.total),
-        title: esc(t.materialName),
-        sub: `${translate("finance.purchase")} · ${formatMoney(t.quantity)} ${esc(t.unit || "")}${project ? " · " + translate("suppliers.project") + ": " + esc(project) : ""}`,
-        dateLabel: t.date || "",
-        invoiceData: t.invoiceData || t.invoiceFile || t.attachment || t.receiptUrl || t.file || "",
-        invoiceType: t.invoiceType || "image/png",
-        invoiceName: t.invoiceName || "invoice",
-      };
-    });
-
-  const rows = sortNewestFirst([...moneyRows, ...purchaseRows]);
+  const rows = sortNewestFirst([...moneyRows]);
 
   if (!rows.length) {
     list.innerHTML = "";

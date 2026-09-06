@@ -1,4 +1,4 @@
-﻿/* ============================================
+/* ============================================
    Spark ERP — Reports Page Script
    Computes and renders the requested statistics:
    project counts, per-supplier purchases, profit
@@ -42,9 +42,8 @@ function renderStats() {
   document.getElementById("reportCompletedProjects").textContent = formatMoney(completed);
 
   const txns = all("moneyTransactions");
-  const material = all("materialTransactions");
   const incoming = moneyIn(txns);
-  const outgoing = moneyOut(txns) + materialPurchases(material);
+  const outgoing = moneyOut(txns);
   document.getElementById("reportTotalIn").textContent = formatMoney(incoming);
   document.getElementById("reportTotalOut").textContent = formatMoney(outgoing);
   document.getElementById("reportNet").textContent = formatMoney(incoming - outgoing);

@@ -8,7 +8,7 @@
    ============================================ */
 
 import { initStore, get, save, uid, today, peopleWithRole } from "../modules/store.js";
-import { statementData, formatMoney, num } from "../modules/calc.js";
+import { formatMoney, num } from "../modules/calc.js";
 import { translate, initI18n } from "../modules/i18n.js";
 import { toast } from "../modules/toast.js";
 import { requireAuth } from "../modules/auth.js";
@@ -76,15 +76,8 @@ function rowHTML(m) {
         <input class="form-input statement-row-name" data-field="name" type="text" value="${esc(m.name || "")}" placeholder="—" />
       </td>
       <td>
-        <div class="statement-qty-cell">
-          <input class="form-input statement-row-qty" data-field="quantity" type="number" min="0" step="0.001" value="${num(m.quantity) || ""}" />
-          <input class="form-input statement-row-unit" data-field="unit" type="text" value="${esc(m.unit || "")}" placeholder="unit" />
-        </div>
-      </td>
-      <td>
         <div class="statement-cost-cell">
-          <input class="form-input statement-row-price" data-field="unitPrice" type="number" min="0" step="0.01" value="${num(m.unitPrice) || ""}" />
-          <span class="statement-row-total">${formatMoney(m.total)}</span>
+          <input class="form-input statement-row-total-input" data-field="total" type="number" min="0" step="0.01" value="${num(m.total) || ""}" placeholder="0" />
         </div>
       </td>
       <td>
@@ -94,6 +87,7 @@ function rowHTML(m) {
               <div class="workmanship-row" style="display:flex; gap:4px; margin-bottom:4px;">
                 <select class="form-input" data-field="contractorId">${contractorOptions(w.contractorId)}</select>
                 <input class="form-input" data-field="amount" type="number" min="0" step="0.01" value="${num(w.amount) || ""}" placeholder="0" style="width:80px;" />
+                <input class="form-input" data-field="note" type="text" value="${esc(w.note || "")}" placeholder="ملاحظة" style="flex:1;" />
                 <button class="btn btn-ghost btn-icon no-print" type="button" data-remove-workmanship title="${translate("statement.remove")}">
                   <i data-lucide="x" class="icon"></i>
                 </button>
@@ -107,7 +101,16 @@ function rowHTML(m) {
         </div>
       </td>
       <td class="is-center">
-        <input class="statement-row-client" data-field="clientBought" type="checkbox"${m.clientBought ? " checked" : ""} />
+        <label style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
+          <input class="statement-row-client" data-field="clientBought" type="checkbox"${m.clientBought ? " checked" : ""} />
+          <div class="client-supervision-box" ${m.clientBought ? "" : 'style="display:none;"'}>
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px;">إشراف الخامة</div>
+            <div style="display:flex; align-items:center; justify-content:center; gap:4px;">
+              <input class="form-input" data-field="clientSupervisionPercent" type="number" min="0" step="0.01" value="${num(m.clientSupervisionPercent) || 0}" placeholder="0" style="width:70px; text-align:center;" title="نسبة الإشراف %" />
+              <span style="font-size:0.8rem;">%</span>
+            </div>
+          </div>
+        </label>
       </td>
       <td class="is-center no-print">
         <button class="btn btn-ghost btn-icon statement-row-remove no-print" type="button" data-remove title="${translate("statement.remove")}">
@@ -148,29 +151,28 @@ function removeMaterialRow(tr) {
 function collectRows() {
   const rows = [];
   document.querySelectorAll("#statementMaterials tbody tr").forEach((tr) => {
-    const quantity = num(tr.querySelector('[data-field="quantity"]')?.value);
-    const unitPrice = num(tr.querySelector('[data-field="unitPrice"]')?.value);
+    const total = num(tr.querySelector('[data-field="total"]')?.value);
     const workmanships = [];
     tr.querySelectorAll('.workmanship-row').forEach(wRow => {
       const contractorId = wRow.querySelector('[data-field="contractorId"]')?.value;
       const amount = num(wRow.querySelector('[data-field="amount"]')?.value);
+      const note = (wRow.querySelector('[data-field="note"]')?.value || "").trim();
       if (contractorId || amount > 0) {
-        workmanships.push({ contractorId, amount });
+        workmanships.push({ contractorId, amount, note });
       }
     });
 
     rows.push({
       id: tr.dataset.materialId || "",
       name: (tr.querySelector('[data-field="name"]')?.value || "").trim(),
-      quantity,
-      unit: (tr.querySelector('[data-field="unit"]')?.value || "").trim(),
-      unitPrice,
-      total: quantity * unitPrice,
+      quantity: 1, // default to 1 since we removed qty/unit
+      unit: "وحدة",
+      unitPrice: total,
+      total: total,
       clientBought: !!tr.querySelector('[data-field="clientBought"]')?.checked,
+      clientSupervisionPercent: num(tr.querySelector('[data-field="clientSupervisionPercent"]')?.value),
       workmanships,
     });
-    const totalEl = tr.querySelector(".statement-row-total");
-    if (totalEl) totalEl.textContent = formatMoney(quantity * unitPrice);
   });
   return rows;
 }
@@ -195,6 +197,7 @@ function buildMaterials(rows, assignIds = false) {
         unitPrice: r.unitPrice,
         total: r.total,
         clientBought: r.clientBought,
+        clientSupervisionPercent: r.clientSupervisionPercent,
         workmanships: r.workmanships,
       });
     } else if (r.name) {
@@ -208,6 +211,7 @@ function buildMaterials(rows, assignIds = false) {
         unitPrice: r.unitPrice,
         total: r.total,
         clientBought: r.clientBought,
+        clientSupervisionPercent: r.clientSupervisionPercent,
         workmanships: r.workmanships,
         date: today(),
       });
@@ -218,11 +222,33 @@ function buildMaterials(rows, assignIds = false) {
 
 function applyStatementData() {
   const rows = collectRows();
-  const data = statementData({ materials: buildMaterials(rows), supervisionAmount: collectSupervision() });
-  document.getElementById("statementMaterialTotal").textContent = formatMoney(data.materialTotal);
-  document.getElementById("statementWorkmanshipTotal").textContent = formatMoney(data.workmanshipTotal);
-  document.getElementById("statementGrandTotal").textContent = formatMoney(data.grandTotal);
-  renderWorkmanshipLines(data.materials);
+  // We need to calculate everything here
+  const materials = buildMaterials(rows);
+  const supervisionPercent = collectSupervision();
+
+  let materialTotal = 0;
+  let workmanshipTotal = 0;
+  let clientSupervisionTotal = 0;
+
+  for (const m of materials) {
+    if (m.clientBought) {
+      clientSupervisionTotal += num(m.total) * (num(m.clientSupervisionPercent) / 100);
+    } else {
+      materialTotal += num(m.total);
+    }
+    workmanshipTotal += (m.workmanships || []).reduce((ws, w) => ws + num(w.amount), 0);
+  }
+
+  const baseForGeneralSupervision = materialTotal + workmanshipTotal;
+  const generalSupervisionValue = baseForGeneralSupervision * (supervisionPercent / 100);
+  const grandTotal = baseForGeneralSupervision + clientSupervisionTotal + generalSupervisionValue;
+
+  document.getElementById("statementMaterialTotal").textContent = formatMoney(materialTotal);
+  document.getElementById("statementWorkmanshipTotal").textContent = formatMoney(workmanshipTotal);
+  document.getElementById("statementClientSupervisionTotal").textContent = formatMoney(clientSupervisionTotal);
+  document.getElementById("statementSupervisionValue").textContent = formatMoney(generalSupervisionValue);
+  document.getElementById("statementGrandTotal").textContent = formatMoney(grandTotal);
+  renderWorkmanshipLines(materials);
 
   document.querySelectorAll("#statementMaterials select").forEach(sel => {
     if (!sel.value) sel.classList.add("is-empty");
@@ -266,8 +292,8 @@ function saveStatement() {
   const project = get("projects", current.id);
   if (!project) return;
   project.materials = buildMaterials(collectRows(), true);
-  project.supervisionAmount = collectSupervision();
-  delete project.supervisionPercent;
+  project.supervisionPercent = collectSupervision();
+  delete project.supervisionAmount;
   save("projects", project);
   toast(translate("common.saved"));
 }
@@ -283,7 +309,7 @@ function render() {
   renderMeta(p);
   renderMaterials(p);
   document.getElementById("statementSupervision").value =
-    num(p.supervisionAmount ?? p.supervisionPercent) || "";
+    num(p.supervisionPercent ?? p.supervisionAmount) || "";
   applyStatementData();
 }
 
@@ -307,7 +333,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.querySelector("#statementMaterials tbody").addEventListener("input", applyStatementData);
   document.querySelector("#statementMaterials tbody").addEventListener("change", (e) => {
     if (e.target.matches('[data-field="clientBought"]')) {
-      e.target.closest("tr").classList.toggle("is-client-bought", e.target.checked);
+      const tr = e.target.closest("tr");
+      tr.classList.toggle("is-client-bought", e.target.checked);
+      const superBox = tr.querySelector(".client-supervision-box");
+      if (superBox) {
+        superBox.style.display = e.target.checked ? "block" : "none";
+      }
     }
     applyStatementData();
   });
@@ -327,6 +358,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       row.innerHTML = `
         <select class="form-input" data-field="contractorId">${contractorOptions("")}</select>
         <input class="form-input" data-field="amount" type="number" min="0" step="0.01" value="" placeholder="0" style="width:80px;" />
+        <input class="form-input" data-field="note" type="text" value="" placeholder="ملاحظة" style="flex:1;" />
         <button class="btn btn-ghost btn-icon no-print" type="button" data-remove-workmanship title="${translate("statement.remove")}">
           <i data-lucide="x" class="icon"></i>
         </button>
