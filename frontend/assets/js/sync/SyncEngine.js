@@ -317,7 +317,7 @@ class SyncEngine {
 
   async pullRemoteChanges() {
     try {
-      const since = this.lastSyncAt || 0;
+      const since = 0;
       const res = await api.pullSync(since);
       if (res && res.ok && res.data) {
         const data = res.data;

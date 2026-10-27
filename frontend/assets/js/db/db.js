@@ -5,7 +5,8 @@
 
 import Dexie from "../../vendor/dexie.mjs";
 
-export const db = new Dexie("spark_erp_db");
+import { tenantKey } from "../modules/identity.js";
+export const db = new Dexie(tenantKey("db"));
 
 db.version(1).stores({
   projects: "id, name, type, status, createdAt, updatedAt, syncStatus, deletedAt",

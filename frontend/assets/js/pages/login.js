@@ -3,6 +3,7 @@
    Theme, i18n (en/ar), demo admin account.
    ============================================ */
 
+import { currentUser } from "../modules/identity.js";
 import { initTheme, toggleTheme } from "../modules/theme.js";
 import { initI18n, setLanguage, translate } from "../modules/i18n.js";
 import { login, isLoggedIn } from "../modules/auth.js";
@@ -52,7 +53,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   /* ---------- Already signed in? (Remember me) ---------- */
   if (isLoggedIn()) {
-    window.location.replace("./dashboard.html");
+    window.location.replace(currentUser()?.role === "admin" ? "./admin.html" : "./dashboard.html");
     return;
   }
 
@@ -128,7 +129,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     loginBtn.disabled = true;
     loginBtn.textContent = translate("login.signingIn");
     setTimeout(() => {
-      window.location.href = "./dashboard.html";
+      const user=JSON.parse(sessionStorage.getItem("general_user")||"null");
+      window.location.href = user?.role === "admin" ? "./admin.html" : "./dashboard.html";
     }, 300);
   });
 });

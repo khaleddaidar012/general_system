@@ -1,3 +1,4 @@
+import { tenantKey } from "./identity.js";
 /* ============================================
    Spark ERP — Backup Module
    Full snapshot export/restore of the shared DB,
@@ -16,7 +17,7 @@ const PREF_KEYS = ["spark_lang", "spark_theme"];
 
 function safeGet(key) {
   try {
-    return localStorage.getItem(key);
+    return localStorage.getItem(tenantKey(key));
   } catch {
     return null;
   }
@@ -24,7 +25,7 @@ function safeGet(key) {
 
 function safeSet(key, value) {
   try {
-    localStorage.setItem(key, value);
+    localStorage.setItem(tenantKey(key), value);
   } catch {
     /* storage unavailable */
   }
@@ -32,7 +33,7 @@ function safeSet(key, value) {
 
 function safeRemove(key) {
   try {
-    localStorage.removeItem(key);
+    localStorage.removeItem(tenantKey(key));
   } catch {
     /* storage unavailable */
   }
@@ -88,7 +89,7 @@ export async function restoreBackup(file, onOk, onError) {
           if (db && typeof db === "object") await api.restore(db);
         } else {
           try {
-            localStorage.setItem(k, v);
+            localStorage.setItem(tenantKey(k), v);
           } catch {
             /* storage unavailable */
           }

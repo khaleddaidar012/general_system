@@ -1,599 +1,111 @@
-/**
- * Spark ERP — Cloudflare Pages API (D1 backend)
- *
- * Single catch-all Pages Function serving the whole API.
- * Routes (all under /api):
- *
- *   GET    /api/health                -> { status, service, time }       (public)
- *   POST   /api/auth/login            -> { token, username }             (public)
- *   POST   /api/auth/verify           -> { ok }                          (auth)
- *   POST   /api/auth/logout           -> 204                             (public)
- *   GET    /api/data                  -> full snapshot of all data       (auth)
- *   POST   /api/data                  -> upsert { collection, item }     (auth)
- *   DELETE /api/data                  -> remove  { collection, id }      (auth)
- *   POST   /api/data/reset            -> wipe all data                   (auth)
- *   POST   /api/data/seed             -> seed demo data (if empty)       (auth)
- *   POST   /api/data/restore          -> full replace  { db }            (auth)
- *   POST   /api/backup                -> store snapshot { payload } in KV (auth)
- *   GET    /api/backup/latest         -> latest snapshot from KV          (auth)
- *
- * Auth: HMAC-SHA256 signed bearer token. Admin credentials come from env
- * (SPARK_ADMIN_USERNAME / SPARK_ADMIN_PASSWORD_HASH); nothing is exposed
- * to the browser.
- */
-
-const SNAPSHOT_KEYS = [
-  "projects",
-  "suppliers",
-  "contractors",
-  "clients",
-  "others",
-  "materials",
-  "moneyTransactions",
-  "materialTransactions",
-  "deductions",
-];
-
-const PEOPLE_COLLECTIONS = ["suppliers", "contractors", "clients", "others"];
-
-const COLLECTION_TABLE = {
-  projects: "projects",
-  suppliers: "people",
-  contractors: "people",
-  clients: "people",
-  others: "people",
-  materials: "materials",
-  moneyTransactions: "money_transactions",
-  materialTransactions: "material_transactions",
-  deductions: "deductions",
-};
-
-const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; /* 30 days */
-
-/* The legacy dev hash (admin / Spark@2026#ERP). Used ONLY as a fallback so the
-   app keeps working until real secrets are set in the Cloudflare environment. */
-const FALLBACK_ADMIN_HASH = "323015fe2dcfe38cccccb8286f7cd571342488eaab0748d8042ab526410f75fb";
-
-/* ------------------------------------------------------------------ */
-/*  Small helpers                                                       */
-/* ------------------------------------------------------------------ */
-
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json; charset=utf-8" },
-  });
+const KEYS = ['projects','suppliers','contractors','clients','others','materials','moneyTransactions','materialTransactions','deductions'];
+const encoder = new TextEncoder();
+const reply = (data, status=200) => new Response(JSON.stringify(data), {status, headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'}});
+const fail = (message,status=400) => { throw Object.assign(new Error(message),{status}); };
+const hex = bytes => Array.from(new Uint8Array(bytes), b=>b.toString(16).padStart(2,'0')).join('');
+async function digest(value) { return hex(await crypto.subtle.digest('SHA-256',encoder.encode(value))); }
+async function passwordHash(password, salt=hex(crypto.getRandomValues(new Uint8Array(16)))) {
+ const key=await crypto.subtle.importKey('raw',encoder.encode(password),'PBKDF2',false,['deriveBits']);
+ return salt+':'+hex(await crypto.subtle.deriveBits({name:'PBKDF2',salt:encoder.encode(salt),iterations:100000,hash:'SHA-256'},key,256));
 }
-
-function unauthorized() {
-  return json({ error: "Unauthorized" }, 401);
+async function passwordMatches(password,hash) { return typeof password==='string' && await passwordHash(password,hash.split(':')[0])===hash; }
+function validatePassword(value) { if(typeof value!=='string'||value.length<12||value.length>256) fail('Password must contain 12 to 256 characters'); }
+function publicUser(u) { return {id:u.id,username:u.username,displayName:u.display_name,role:u.role,active:!!u.active,createdAt:u.created_at}; }
+async function bodyOf(request) { try { return await request.json(); } catch { fail('Invalid JSON'); } }
+async function authenticate(request,db) {
+ const token=(request.headers.get('Authorization')||'').replace(/^Bearer /,'');
+ const user=await db.prepare('SELECT a.* FROM accounts a JOIN sessions s ON a.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND s.version=a.session_version AND a.active=1').bind(await digest(token),Date.now()).first();
+ if(!user) fail('Unauthorized',401); return user;
 }
-
-async function readJson(request) {
-  try {
-    return await request.json();
-  } catch {
-    return null;
+function recordStatement(db,user,collection,item) {
+ if(!KEYS.includes(collection)||!item||typeof item.id!=='string'||!item.id||item.id.length>256) fail('Invalid collection or item');
+ return db.prepare('INSERT INTO tenant_records(user_id,collection,id,data) VALUES(?,?,?,?) ON CONFLICT(user_id,collection,id) DO UPDATE SET data=excluded.data').bind(user.id,collection,item.id,JSON.stringify(item));
+}
+async function snapshot(db,user) {
+ const out=Object.fromEntries(KEYS.map(k=>[k,[]]));
+ const {results}=await db.prepare('SELECT collection,data FROM tenant_records WHERE user_id=?').bind(user.id).all();
+ for(const row of results||[]) if(out[row.collection]) out[row.collection].push(JSON.parse(row.data)); return out;
+}
+export async function onRequest({request,env}) {
+ try {
+ const path=new URL(request.url).pathname.replace(/\/$/,''); const method=request.method; const db=env.DB;
+ if(path==='/api/health') return reply({status:'ok',service:'general-system'});
+ if(!db) fail('D1 DB binding is required',503);
+ if(path==='/api/auth/login' && method==='POST') {
+  const b=await bodyOf(request); const username=String(b.username||'').trim().toLowerCase();
+  if(!username || typeof b.password!=='string'||b.password.length>256) fail('Invalid credentials',401);
+  const throttle=await digest((request.headers.get('CF-Connecting-IP')||'local')+':'+username);
+  const attempt=await db.prepare('SELECT * FROM login_attempts WHERE key=?').bind(throttle).first();
+  if(attempt && attempt.expires_at>Date.now() && attempt.attempts>=10) fail('Too many attempts. Try again in 15 minutes',429);
+  await db.prepare('INSERT INTO login_attempts(key,attempts,expires_at) VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN expires_at<? THEN 1 ELSE attempts+1 END, expires_at=CASE WHEN expires_at<? THEN excluded.expires_at ELSE expires_at END').bind(throttle,Date.now()+900000,Date.now(),Date.now()).run();
+  // Provision the first administrator only with explicitly configured deployment credentials.
+  if(username===String(env.SPARK_ADMIN_USERNAME||'').toLowerCase() && env.SPARK_ADMIN_PASSWORD && b.password===env.SPARK_ADMIN_PASSWORD) {
+   validatePassword(b.password);
+   const hash=await passwordHash(b.password);
+   await db.prepare("INSERT INTO accounts(id,username,display_name,password_hash,role,created_at) SELECT ?,?,?,?,'admin',? WHERE NOT EXISTS(SELECT 1 FROM accounts WHERE role='admin') ON CONFLICT(username) DO NOTHING").bind(crypto.randomUUID(),username,'Administrator',hash,Date.now()).run();
   }
-}
-
-function bearerToken(request) {
-  const header = request.headers.get("Authorization") || "";
-  const m = header.match(/^Bearer\s+(.+)$/i);
-  return m ? m[1].trim() : null;
-}
-
-function constantTimeEqual(a, b) {
-  const A = String(a == null ? "" : a);
-  const B = String(b == null ? "" : b);
-  let diff = A.length ^ B.length;
-  const len = Math.max(A.length, B.length);
-  for (let i = 0; i < len; i++) {
-    diff |= (A.charCodeAt(i) || 0) ^ (B.charCodeAt(i) || 0);
+  const u=await db.prepare('SELECT * FROM accounts WHERE username=?').bind(username).first();
+  if(!u||!u.active||!await passwordMatches(b.password,u.password_hash)) fail('Invalid username or password',401);
+  await db.prepare('DELETE FROM login_attempts WHERE key=?').bind(throttle).run();
+  const token=hex(crypto.getRandomValues(new Uint8Array(32)));
+  await db.prepare('INSERT INTO sessions(token_hash,user_id,version,expires_at) VALUES(?,?,?,?)').bind(await digest(token),u.id,u.session_version,Date.now()+86400000).run();
+  return reply({token,username:u.username,user:publicUser(u)});
+ }
+ const user=await authenticate(request,db);
+ if(path==='/api/auth/me' && method==='GET') return reply({user:publicUser(user)});
+ if(path==='/api/auth/logout' && method==='POST') {
+  await db.prepare('DELETE FROM sessions WHERE token_hash=?').bind(await digest((request.headers.get('Authorization')||'').replace(/^Bearer /,''))).run(); return reply({ok:true});
+ }
+ if(path==='/api/auth/verify' && method==='POST') return reply({ok:await passwordMatches((await bodyOf(request)).password,user.password_hash)});
+ if(path==='/api/auth/change-password' && method==='POST') {
+  const b=await bodyOf(request); validatePassword(b.newPassword);
+  if(!await passwordMatches(b.currentPassword,user.password_hash)) fail('Wrong current password',403);
+  await db.prepare('UPDATE accounts SET password_hash=?,session_version=session_version+1 WHERE id=?').bind(await passwordHash(b.newPassword),user.id).run(); return reply({ok:true,reauthenticate:true});
+ }
+ if(path.startsWith('/api/admin/')) {
+  if(user.role!=='admin') fail('Forbidden',403);
+  if(path==='/api/admin/users' && method==='GET') { const r=await db.prepare('SELECT * FROM accounts ORDER BY created_at DESC').all(); return reply({users:r.results.map(publicUser)}); }
+  if(path==='/api/admin/users' && method==='POST') {
+   const b=await bodyOf(request); const name=String(b.username||'').trim().toLowerCase();
+   if(!/^[a-z0-9_.-]{3,64}$/.test(name)) fail('Username must be 3-64 letters, numbers, dots, underscores or hyphens'); validatePassword(b.password);
+   if(!String(b.displayName||'').trim()||b.displayName.length>120) fail('Display name is required (max 120 characters)');
+   const id=crypto.randomUUID();
+   try { await db.prepare("INSERT INTO accounts(id,username,display_name,password_hash,role,created_at) VALUES(?,?,?,?,'user',?)").bind(id,name,b.displayName.trim(),await passwordHash(b.password),Date.now()).run(); } catch(e) { if(String(e).includes('UNIQUE')) fail('Username already exists',409); throw e; }
+   return reply({ok:true,id},201);
   }
-  return diff === 0;
-}
-
-function uid() {
-  return "id_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
-}
-
-function b64u(bytes) {
-  const arr = new Uint8Array(bytes);
-  let s = "";
-  for (let i = 0; i < arr.length; i += 0x8000) {
-    s += String.fromCharCode(...arr.subarray(i, i + 0x8000));
+  const match=path.match(/^\/api\/admin\/users\/([^/]+)$/);
+  if(match && method==='PATCH') {
+   const id=decodeURIComponent(match[1]); const b=await bodyOf(request);
+   const target=await db.prepare('SELECT * FROM accounts WHERE id=?').bind(id).first(); if(!target) fail('User not found',404);
+   if(target.role==='admin') fail('Administrator accounts cannot be changed here',403);
+   const statements=[];
+   if(b.active!==undefined) { if(typeof b.active!=='boolean') fail('Invalid active value'); statements.push(db.prepare('UPDATE accounts SET active=?,session_version=session_version+1 WHERE id=?').bind(b.active?1:0,id)); }
+   if(b.password!==undefined) { validatePassword(b.password); statements.push(db.prepare('UPDATE accounts SET password_hash=?,session_version=session_version+1 WHERE id=?').bind(await passwordHash(b.password),id)); }
+   if(b.displayName!==undefined) { if(typeof b.displayName!=='string'||!b.displayName.trim()||b.displayName.length>120) fail('Invalid display name'); statements.push(db.prepare('UPDATE accounts SET display_name=? WHERE id=?').bind(b.displayName.trim(),id)); }
+   if(!statements.length) fail('No changes supplied'); await db.batch(statements); return reply({ok:true});
   }
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function fromB64u(str) {
-  const b64 = String(str).replace(/-/g, "+").replace(/_/g, "/");
-  const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-  const bin = atob(padded);
-  const arr = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-  return arr;
-}
-
-function textToBytes(text) {
-  return new TextEncoder().encode(text);
-}
-
-async function sha256Hex(text) {
-  const digest = await crypto.subtle.digest("SHA-256", textToBytes(text));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-/* ------------------------------------------------------------------ */
-/*  Token auth                                                          */
-/* ------------------------------------------------------------------ */
-
-async function signToken(username, secret) {
-  const payload = b64u(textToBytes(JSON.stringify({ u: username, exp: Date.now() + TOKEN_TTL_MS })));
-  const key = await crypto.subtle.importKey("raw", textToBytes(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", key, textToBytes(payload));
-  return payload + "." + b64u(sig);
-}
-
-async function verifyToken(token, secret) {
-  try {
-    const parts = String(token || "").split(".");
-    if (parts.length !== 2) return null;
-    const [payload, sig] = parts;
-    const key = await crypto.subtle.importKey("raw", textToBytes(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
-    const valid = await crypto.subtle.verify("HMAC", key, fromB64u(sig), textToBytes(payload));
-    if (!valid) return null;
-    const data = JSON.parse(new TextDecoder().decode(fromB64u(payload)));
-    if (!data.u || !data.exp || Date.now() > data.exp) return null;
-    return data.u;
-  } catch {
-    return null;
-  }
-}
-
-function config(env) {
-  return {
-    adminUser: env.SPARK_ADMIN_USERNAME || "admin",
-    adminHash: env.SPARK_ADMIN_PASSWORD_HASH || FALLBACK_ADMIN_HASH,
-    authSecret: env.AUTH_SECRET || (env.SPARK_ADMIN_PASSWORD_HASH || FALLBACK_ADMIN_HASH) + ":spark-erp-secret",
-  };
-}
-
-async function requireAuth(request, env) {
-  const token = bearerToken(request);
-  if (!token) return null;
-  return verifyToken(token, config(env).authSecret);
-}
-
-/* ------------------------------------------------------------------ */
-/*  D1 access                                                           */
-/* ------------------------------------------------------------------ */
-
-function readRows(db, sql) {
-  return db.prepare(sql).all().then((r) => r.results || []);
-}
-
-async function upsertItem(db, collection, item) {
-  if (!item || typeof item !== "object" || !item.id) return { ok: false, error: "item.id is required" };
-  const table = COLLECTION_TABLE[collection];
-  if (!table) return { ok: false, error: "unknown collection: " + collection };
-
-  const now = Date.now();
-  const data = JSON.stringify(item);
-  if (table === "people") {
-    await db.prepare(
-      `INSERT INTO people (id, kind, name, roles, data, updated_at) VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         kind = excluded.kind, name = excluded.name,
-         roles = excluded.roles, data = excluded.data, updated_at = excluded.updated_at`
-    ).bind(item.id, collection, String(item.name || ""), JSON.stringify(item.roles || []), data, now).run();
-  } else if (table === "projects") {
-    await db.prepare(
-      `INSERT INTO projects (id, name, type, status, created_at, data, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         name = excluded.name, type = excluded.type,
-         status = excluded.status, created_at = excluded.created_at, data = excluded.data, updated_at = excluded.updated_at`
-    ).bind(item.id, String(item.name || ""), item.type || "", item.status || "", item.createdAt || "", data, now).run();
-  } else if (table === "materials") {
-    await db.prepare(
-      `INSERT INTO materials (id, name, data, updated_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET name = excluded.name, data = excluded.data, updated_at = excluded.updated_at`
-    ).bind(item.id, String(item.name || ""), data, now).run();
-  } else if (table === "money_transactions") {
-    await db.prepare(
-      `INSERT INTO money_transactions (id, direction, person_id, project_id, created_at, data, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         direction = excluded.direction, person_id = excluded.person_id,
-         project_id = excluded.project_id, created_at = excluded.created_at, data = excluded.data, updated_at = excluded.updated_at`
-    ).bind(item.id, item.direction || "", item.personId || null, item.projectId || null, item.createdAt || 0, data, now).run();
-  } else if (table === "deductions") {
-    await db.prepare(
-      `INSERT INTO deductions (id, person_id, person_type, project_id, date, created_at, data, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         person_id = excluded.person_id, person_type = excluded.person_type,
-         project_id = excluded.project_id, date = excluded.date, created_at = excluded.created_at, data = excluded.data, updated_at = excluded.updated_at`
-    ).bind(item.id, item.personId || null, item.personType || "contractor", item.projectId || null, item.date || "", item.createdAt || 0, data, now).run();
-  } else {
-    await db.prepare(
-      `INSERT INTO material_transactions (id, direction, project_id, created_at, data, updated_at) VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         direction = excluded.direction, project_id = excluded.project_id,
-         created_at = excluded.created_at, data = excluded.data, updated_at = excluded.updated_at`
-    ).bind(item.id, item.direction || "", item.projectId || null, item.createdAt || 0, data, now).run();
-  }
-  return { ok: true };
-}
-
-async function removeItem(db, collection, id) {
-  if (!COLLECTION_TABLE[collection]) return { ok: false, error: "unknown collection" };
-  if (!id) return { ok: false, error: "id is required" };
-  const table = COLLECTION_TABLE[collection];
-  await db.prepare(`DELETE FROM ${table} WHERE id = ?`).bind(id).run();
-  return { ok: true };
-}
-
-async function reset(db) {
-  await db.batch([
-    db.prepare("DELETE FROM projects"),
-    db.prepare("DELETE FROM people"),
-    db.prepare("DELETE FROM materials"),
-    db.prepare("DELETE FROM money_transactions"),
-    db.prepare("DELETE FROM material_transactions"),
-    db.prepare("DELETE FROM deductions"),
-  ]);
-}
-
-async function snapshot(db) {
-  const [projects, people, materials, money, mat, ded] = await Promise.all([
-    readRows(db, "SELECT data FROM projects ORDER BY rowid ASC"),
-    readRows(db, "SELECT kind, data FROM people ORDER BY rowid ASC"),
-    readRows(db, "SELECT data FROM materials ORDER BY rowid ASC"),
-    readRows(db, "SELECT data FROM money_transactions ORDER BY rowid ASC"),
-    readRows(db, "SELECT data FROM material_transactions ORDER BY rowid ASC"),
-    readRows(db, "SELECT data FROM deductions ORDER BY rowid ASC"),
-  ]);
-  return buildSnapshotResult(projects, people, materials, money, mat, ded);
-}
-
-async function snapshotSince(db, since) {
-  try {
-    const [projects, people, materials, money, mat, ded] = await Promise.all([
-      readRows(db, `SELECT data FROM projects WHERE updated_at > ${since} ORDER BY rowid ASC`),
-      readRows(db, `SELECT kind, data FROM people WHERE updated_at > ${since} ORDER BY rowid ASC`),
-      readRows(db, `SELECT data FROM materials WHERE updated_at > ${since} ORDER BY rowid ASC`),
-      readRows(db, `SELECT data FROM money_transactions WHERE updated_at > ${since} ORDER BY rowid ASC`),
-      readRows(db, `SELECT data FROM material_transactions WHERE updated_at > ${since} ORDER BY rowid ASC`),
-      readRows(db, `SELECT data FROM deductions WHERE updated_at > ${since} ORDER BY rowid ASC`),
-    ]);
-    return buildSnapshotResult(projects, people, materials, money, mat, ded);
-  } catch (err) {
-    // If updated_at column doesn't exist yet (migration not run), fallback to full snapshot
-    return snapshot(db);
-  }
-}
-
-function buildSnapshotResult(projects, people, materials, money, mat, ded) {
-  const result = {
-    projects: projects.map((r) => JSON.parse(r.data)),
-    suppliers: [],
-    contractors: [],
-    clients: [],
-    others: [],
-    materials: materials.map((r) => JSON.parse(r.data)),
-    moneyTransactions: money.map((r) => JSON.parse(r.data)),
-    materialTransactions: mat.map((r) => JSON.parse(r.data)),
-    deductions: ded.map((r) => JSON.parse(r.data)),
-  };
-  for (const row of people) {
-    const item = JSON.parse(row.data);
-    if (Array.isArray(result[row.kind])) result[row.kind].push(item);
-  }
-  return result;
-}
-
-async function restore(db, full) {
-  if (!full || typeof full !== "object") return { ok: false, error: "invalid db payload" };
-  const stmts = [
-    db.prepare("DELETE FROM projects"),
-    db.prepare("DELETE FROM people"),
-    db.prepare("DELETE FROM materials"),
-    db.prepare("DELETE FROM money_transactions"),
-    db.prepare("DELETE FROM material_transactions"),
-    db.prepare("DELETE FROM deductions"),
-  ];
-  for (const key of SNAPSHOT_KEYS) {
-    const list = Array.isArray(full[key]) ? full[key] : [];
-    for (const item of list) {
-      if (!item || typeof item !== "object" || !item.id || !COLLECTION_TABLE[key]) continue;
-      const table = COLLECTION_TABLE[key];
-      const data = JSON.stringify(item);
-      if (table === "people") {
-        stmts.push(
-          db.prepare(
-            `INSERT INTO people (id, kind, name, roles, data) VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET
-               kind = excluded.kind, name = excluded.name,
-               roles = excluded.roles, data = excluded.data`
-          ).bind(item.id, key, String(item.name || ""), JSON.stringify(item.roles || []), data)
-        );
-      } else if (table === "projects") {
-        stmts.push(
-          db.prepare(
-            `INSERT INTO projects (id, name, type, status, created_at, data) VALUES (?, ?, ?, ?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET
-               name = excluded.name, type = excluded.type,
-               status = excluded.status, created_at = excluded.created_at, data = excluded.data`
-          ).bind(item.id, String(item.name || ""), item.type || "", item.status || "", item.createdAt || "", data)
-        );
-      } else if (table === "materials") {
-        stmts.push(
-          db.prepare(
-            `INSERT INTO materials (id, name, data) VALUES (?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET name = excluded.name, data = excluded.data`
-          ).bind(item.id, String(item.name || ""), data)
-        );
-      } else if (table === "money_transactions") {
-        stmts.push(
-          db.prepare(
-            `INSERT INTO money_transactions (id, direction, person_id, project_id, created_at, data) VALUES (?, ?, ?, ?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET
-               direction = excluded.direction, person_id = excluded.person_id,
-               project_id = excluded.project_id, created_at = excluded.created_at, data = excluded.data`
-          ).bind(item.id, item.direction || "", item.personId || null, item.projectId || null, item.createdAt || 0, data)
-        );
-      } else if (table === "deductions") {
-        stmts.push(
-          db.prepare(
-            `INSERT INTO deductions (id, person_id, person_type, project_id, date, created_at, data) VALUES (?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET
-               person_id = excluded.person_id, person_type = excluded.person_type,
-               project_id = excluded.project_id, date = excluded.date, created_at = excluded.created_at, data = excluded.data`
-          ).bind(item.id, item.personId || null, item.personType || "contractor", item.projectId || null, item.date || "", item.createdAt || 0, data)
-        );
-      } else {
-        stmts.push(
-          db.prepare(
-            `INSERT INTO material_transactions (id, direction, project_id, created_at, data) VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET
-               direction = excluded.direction, project_id = excluded.project_id,
-               created_at = excluded.created_at, data = excluded.data`
-          ).bind(item.id, item.direction || "", item.projectId || null, item.createdAt || 0, data)
-        );
-      }
-    }
-  }
-  await db.batch(stmts);
-  return { ok: true };
-}
-
-/* ------------------------------------------------------------------ */
-/*  Demo seed (mirrors the old store.js seed, only inserted when empty) */
-/* ------------------------------------------------------------------ */
-
-async function seed(db) {
-  const count = await db.prepare("SELECT COUNT(*) AS n FROM projects").first();
-  if (count && Number(count.n) > 0) return { ok: true, seeded: false };
-
-  const today = new Date().toISOString().slice(0, 10);
-  let seedCreatedAt = Date.now() - 5 * 60 * 1000;
-  const money = (direction, personType, personId, personName, amount, projectId = null, note = "") => ({
-    id: uid(),
-    direction,
-    personType,
-    personId,
-    personName,
-    amount: Number(amount),
-    projectId,
-    date: today,
-    createdAt: (seedCreatedAt += 60 * 1000),
-    note,
-  });
-
-  const suppliers = [
-    { id: uid(), name: "أبو حمد للرمل", phone: "01000000001", notes: "", supplies: ["رمل", "زلط", "سن"], purchases: 12500, paid: 12500 },
-    { id: uid(), name: "المنصورة للأسمنت", phone: "01000000002", notes: "", supplies: ["أسمنت", "جبس"], purchases: 48000, paid: 30000 },
-    { id: uid(), name: "الصلب الحديث", phone: "01000000003", notes: "", supplies: ["حديد تسليح"], purchases: 96000, paid: 60000 },
-  ];
-  const contractors = [
-    { id: uid(), name: "مقاول السباكة", role: "plumbing", phone: "01111111111", total: 15000, paid: 10000 },
-    { id: uid(), name: "مقاول الكهرباء", role: "electrical", phone: "01111111112", total: 12000, paid: 5000 },
-    { id: uid(), name: "مقاول التشطيب", role: "finishing", phone: "01111111113", total: 40000, paid: 15000 },
-    { id: uid(), name: "مقاول الدهانات", role: "painting", phone: "01111111114", total: 8000, paid: 8000 },
-    { id: uid(), name: "مقاول السيراميك", role: "tiles", phone: "01111111115", total: 20000, paid: 20000 },
-  ];
-  const clients = [{ id: uid(), name: "م/ أحمد السيد", phone: "01200000001", notes: "", paid: 50000, remaining: 300000 }];
-  const materials = [
-    { id: uid(), name: "أسمنت", unit: "شيكارة", qty: 350, unitPrice: 110 },
-    { id: uid(), name: "رمل", unit: "متر مكعب", qty: 20, unitPrice: 250 },
-    { id: uid(), name: "حديد تسليح", unit: "طن", qty: 8, unitPrice: 12000 },
-    { id: uid(), name: "سيراميك", unit: "متر مربع", qty: 40, unitPrice: 220 },
-    { id: uid(), name: "دهانات", unit: "جالون", qty: 60, unitPrice: 320 },
-  ];
-  const project = {
-    id: uid(),
-    name: "شقة 150 م² - التجمع الخامس",
-    type: "apartment",
-    area: 150,
-    advancePayment: 50000,
-    status: "active",
-    progress: 45,
-    createdAt: today,
-    contractors: contractors.map((c) => ({ id: c.id, name: c.name, role: c.role, total: c.total, paid: c.paid })),
-    materials: [
-      { id: uid(), name: "أسمنت", supplierId: suppliers[1].id, supplierName: suppliers[1].name, contractorId: contractors[0].id, contractorName: contractors[0].name, quantity: 100, unit: "شيكارة", unitPrice: 110, total: 11000, date: today },
-      { id: uid(), name: "رمل", supplierId: suppliers[0].id, supplierName: suppliers[0].name, contractorId: contractors[0].id, contractorName: contractors[0].name, quantity: 10, unit: "متر مكعب", unitPrice: 250, total: 2500, date: today },
-      { id: uid(), name: "حديد تسليح", supplierId: suppliers[2].id, supplierName: suppliers[2].name, contractorId: contractors[1].id, contractorName: contractors[1].name, quantity: 4, unit: "طن", unitPrice: 12000, total: 48000, date: today },
-    ],
-    otherExpenses: [],
-  };
-
-  const dbData = {
-    projects: [project],
-    suppliers,
-    contractors,
-    clients,
-    materials,
-    moneyTransactions: [
-      money("in", "client", clients[0].id, clients[0].name, 50000, project.id, "دفعة مقدمة"),
-      money("out", "contractor", contractors[0].id, contractors[0].name, 10000, project.id, "دفعة مقاول السباكة"),
-      money("out", "contractor", contractors[1].id, contractors[1].name, 5000, project.id, "دفعة مقاول الكهرباء"),
-      money("out", "supplier", suppliers[1].id, suppliers[1].name, 30000, project.id, "دفعة أسمنت"),
-      money("out", "supplier", suppliers[2].id, suppliers[2].name, 60000, project.id, "دفعة حديد"),
-    ],
-    materialTransactions: [],
-  };
-
-  await restore(db, dbData);
-  return { ok: true, seeded: true };
-}
-
-/* ------------------------------------------------------------------ */
-/*  Request router                                                      */
-/* ------------------------------------------------------------------ */
-
-export async function onRequest(context) {
-  const { request, env } = context;
-  const url = new URL(request.url);
-  const segments = url.pathname.replace(/^\/api\/?/, "").split("/").filter(Boolean);
-  const method = request.method.toUpperCase();
-
-  try {
-    /* Health (public) */
-    if (segments[0] === "health" && method === "GET") {
-      return json({ status: "ok", service: "spark-erp-api", time: Date.now() });
-    }
-
-    /* Auth */
-    if (segments[0] === "auth" && segments[1] === "login" && method === "POST") {
-      const body = await readJson(request);
-      const { username, password } = body || {};
-      if (typeof username !== "string" || typeof password !== "string") {
-        return json({ error: "username and password are required" }, 400);
-      }
-      const c = config(env);
-      const cleanUser = username.trim().toLowerCase();
-      const cleanPass = password.trim();
-      const hash1 = await sha256Hex(cleanPass);
-      const hash2 = await sha256Hex(password);
-      const validUser = cleanUser === c.adminUser.toLowerCase();
-      const validHash = hash1 === c.adminHash || hash2 === c.adminHash;
-      if (!validUser || !validHash) {
-        return json({ error: "Invalid username or password" }, 401);
-      }
-      const token = await signToken(c.adminUser, c.authSecret);
-      return json({ token, username: c.adminUser });
-    }
-
-    if (segments[0] === "auth" && segments[1] === "verify" && method === "POST") {
-      const user = await requireAuth(request, env);
-      if (!user) return unauthorized();
-      const body = await readJson(request);
-      const c = config(env);
-      const ok = constantTimeEqual(await sha256Hex(String((body && body.password) || "")), c.adminHash);
-      return json({ ok });
-    }
-
-    if (segments[0] === "auth" && segments[1] === "change-password" && method === "POST") {
-      const user = await requireAuth(request, env);
-      if (!user) return unauthorized();
-      const body = await readJson(request);
-      if (!body || !body.newPassword || body.newPassword.length < 4) {
-        return json({ error: "Invalid password" }, 400);
-      }
-      return json({ ok: true });
-    }
-
-    if (segments[0] === "auth" && segments[1] === "logout" && method === "POST") {
-      return new Response(null, { status: 204 });
-    }
-
-    /* Data */
-    if (segments[0] === "data") {
-      const user = await requireAuth(request, env);
-      if (!user) return unauthorized();
-
-      if (method === "GET" && segments.length === 1) {
-        return json(await snapshot(env.DB));
-      }
-      if (segments[1] === "reset" && method === "POST") {
-        await reset(env.DB);
-        return json({ ok: true });
-      }
-      if (segments[1] === "seed" && method === "POST") {
-        return json(await seed(env.DB));
-      }
-      if (segments[1] === "restore" && method === "POST") {
-        const body = await readJson(request);
-        if (!body || !body.db) return json({ error: "db payload is required" }, 400);
-        return json(await restore(env.DB, body.db));
-      }
-      if (segments.length === 1 && method === "POST") {
-        const body = await readJson(request);
-        const res = await upsertItem(env.DB, body && body.collection, body && body.item);
-        return res.ok ? json({ ok: true }) : json({ error: res.error }, 400);
-      }
-      if (segments.length === 1 && method === "DELETE") {
-        const body = await readJson(request);
-        const res = await removeItem(env.DB, body && body.collection, body && body.id);
-        return res.ok ? json({ ok: true }) : json({ error: res.error }, 400);
-      }
-      return json({ error: "not found" }, 404);
-    }
-
-    /* Sync Engine Push & Pull API */
-    if (segments[0] === "sync") {
-      const user = await requireAuth(request, env);
-      if (!user) return unauthorized();
-
-      if (segments[1] === "push" && method === "POST") {
-        const body = await readJson(request);
-        const ops = Array.isArray(body && body.operations) ? body.operations : [];
-        const processed = [];
-        for (const op of ops) {
-          if (!op || !op.entity || !op.payload) continue;
-          if (op.operation === "delete") {
-            await removeItem(env.DB, op.entity, op.entityId || op.payload.id);
-          } else {
-            await upsertItem(env.DB, op.entity, op.payload);
-          }
-          if (op.id) processed.push(op.id);
-        }
-        return json({ ok: true, processed, serverTime: Date.now() });
-      }
-
-      if (segments[1] === "pull" && method === "GET") {
-        const since = Number(url.searchParams.get("since")) || 0;
-        const data = since > 0 ? await snapshotSince(env.DB, since) : await snapshot(env.DB);
-        return json({ ok: true, serverTime: Date.now(), data });
-      }
-
-      return json({ error: "not found" }, 404);
-    }
-
-    /* Backup snapshots (stored in KV when a binding is configured) */
-    if (segments[0] === "backup") {
-      const user = await requireAuth(request, env);
-      if (!user) return unauthorized();
-
-      if (method === "POST") {
-        const body = await readJson(request);
-        if (!env.BACKUP_KV) return json({ error: "BACKUP_KV binding is not configured" }, 501);
-        await env.BACKUP_KV.put("latest", JSON.stringify(body), { expirationTtl: 60 * 60 * 24 * 365 });
-        await env.BACKUP_KV.put("backup-" + Date.now(), JSON.stringify(body), { expirationTtl: 60 * 60 * 24 * 365 });
-        return json({ ok: true });
-      }
-      if (segments[1] === "latest" && method === "GET") {
-        if (!env.BACKUP_KV) return json({ error: "BACKUP_KV binding is not configured" }, 501);
-        const raw = await env.BACKUP_KV.get("latest");
-        if (raw == null) return json({ error: "no backup yet" }, 404);
-        return json(JSON.parse(raw));
-      }
-      return json({ error: "not found" }, 404);
-    }
-
-    return json({ error: "not found" }, 404);
-  } catch (err) {
-    return json({ error: err.message || "internal error" }, 500);
-  }
+  fail('Not found',404);
+ }
+ if(path==='/api/data' && method==='GET') return reply(await snapshot(db,user));
+ if(path==='/api/data' && method==='POST') { const b=await bodyOf(request); await recordStatement(db,user,b.collection,b.item).run(); return reply({ok:true}); }
+ if(path==='/api/data' && method==='DELETE') { const b=await bodyOf(request); if(!KEYS.includes(b.collection)||!b.id) fail('Invalid record'); await db.prepare('DELETE FROM tenant_records WHERE user_id=? AND collection=? AND id=?').bind(user.id,b.collection,b.id).run(); return reply({ok:true}); }
+ if(path==='/api/data/reset' && method==='POST') { await db.prepare('DELETE FROM tenant_records WHERE user_id=?').bind(user.id).run(); return reply({ok:true}); }
+ if(path==='/api/data/seed' && method==='POST') return reply({ok:true,seeded:false});
+ if(path==='/api/data/restore' && method==='POST') {
+  const b=await bodyOf(request); if(!b.db||typeof b.db!=='object'||Array.isArray(b.db)) fail('Invalid backup');
+  const statements=[db.prepare('DELETE FROM tenant_records WHERE user_id=?').bind(user.id)];
+  for(const k of KEYS) { if(b.db[k]!==undefined&&!Array.isArray(b.db[k])) fail('Invalid collection'); for(const item of b.db[k]||[]) statements.push(recordStatement(db,user,k,item)); }
+  await db.batch(statements); return reply({ok:true});
+ }
+ if(path==='/api/sync/push' && method==='POST') {
+  const b=await bodyOf(request); if(!Array.isArray(b.operations)||b.operations.length>100) fail('Invalid operations (max 100)'); const statements=[];
+  for(const op of b.operations) { if(!KEYS.includes(op.entity)) fail('Unknown collection'); if(op.operation==='delete') { const id=op.entityId||op.payload?.id; if(typeof id!=='string'||!id) fail('Invalid id'); statements.push(db.prepare('DELETE FROM tenant_records WHERE user_id=? AND collection=? AND id=?').bind(user.id,op.entity,id)); } else { if(!['create','update','upsert'].includes(op.operation)) fail('Invalid operation'); statements.push(recordStatement(db,user,op.entity,op.payload)); } }
+  if(statements.length) await db.batch(statements); return reply({ok:true,processed:b.operations.map(x=>x.id),serverTime:Date.now()});
+ }
+ // Full snapshots propagate deletions and resets across devices without clock assumptions.
+ if(path==='/api/sync/pull' && method==='GET') return reply({ok:true,data:await snapshot(db,user),serverTime:Date.now()});
+ if(path==='/api/backup' && method==='POST') { const b=await bodyOf(request); await db.prepare('INSERT INTO tenant_backups(user_id,data,updated_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at').bind(user.id,JSON.stringify(b),Date.now()).run(); return reply({ok:true}); }
+ if(path==='/api/backup/latest' && method==='GET') { const row=await db.prepare('SELECT data FROM tenant_backups WHERE user_id=?').bind(user.id).first(); if(!row) fail('No backup yet',404); return reply(JSON.parse(row.data)); }
+ fail('Not found',404);
+ } catch(e) { if(!e.status) console.error(e); return reply({error:e.status?e.message:'Internal server error'},e.status||500); }
 }

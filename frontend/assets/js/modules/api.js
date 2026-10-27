@@ -9,18 +9,23 @@ export const API_BASE = "/api";
 const TOKEN_KEY = "spark_token";
 const REMEMBER_KEY = "spark_remember";
 
+let activeToken;
+try { activeToken = sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || null; if(activeToken) sessionStorage.setItem(TOKEN_KEY,activeToken); } catch { activeToken=null; }
+
 export function getToken() {
   try {
-    return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || null;
+    return activeToken;
   } catch {
     return null;
   }
 }
 
 export function setToken(token, remember) {
+  activeToken=token;
   try {
     localStorage.removeItem(TOKEN_KEY);
     sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.setItem(TOKEN_KEY, token);
     if (remember) {
       localStorage.setItem(TOKEN_KEY, token);
       localStorage.setItem(REMEMBER_KEY, "1");
@@ -34,6 +39,7 @@ export function setToken(token, remember) {
 }
 
 export function clearToken() {
+  activeToken=null;
   try {
     localStorage.removeItem(TOKEN_KEY);
     sessionStorage.removeItem(TOKEN_KEY);
@@ -94,7 +100,7 @@ export const api = {
   login: (username, password) => request("/auth/login", { method: "POST", auth: false, body: { username, password } }),
   verifyPassword: (password) => request("/auth/verify", { method: "POST", body: { password } }),
   changePassword: (currentPassword, newPassword) => request("/auth/change-password", { method: "POST", body: { currentPassword, newPassword } }),
-  logout: () => request("/auth/logout", { method: "POST", auth: false }),
+  logout: () => request("/auth/logout", { method: "POST" }),
 
   /* data */
   snapshot: () => request("/data"),

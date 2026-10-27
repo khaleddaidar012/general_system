@@ -1,5 +1,5 @@
 {
-  "appName": "Spark Engineering",
+  "appName": "General System",
   "common": {
     "saved": "Saved successfully",
     "deleted": "Deleted successfully",
@@ -24,7 +24,7 @@
     "errorRequired": "Please enter your username and password.",
     "errorInvalid": "Invalid username or password.",
     "errorOfflineNoMatch": "No saved credentials found for offline login. Please connect to internet for initial login.",
-    "footer": "© Spark Engineering Company"
+    "footer": "© General System"
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -345,7 +345,7 @@
     "comingSoon": "Reports module is coming soon."
   },
   "statement": {
-    "title": "Spark Engineering Project Statement of Account",
+    "title": "General System Project Statement of Account",
     "project": "Project",
     "area": "Area",
     "date": "Date",
@@ -386,8 +386,8 @@
     "deductionApplyBtn": "Apply Deduction",
     "printPdf": "Print Statement PDF",
     "close": "Close",
-    "note": "This document is an official statement of account from Spark Engineering. All amounts in EGP.",
-    "company": "Spark Engineering ERP"
+    "note": "This document is an official statement of account from General System. All amounts in EGP.",
+    "company": "General System ERP"
   },
   "settings": {
     "title": "Settings",

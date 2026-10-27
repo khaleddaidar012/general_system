@@ -84,7 +84,7 @@ export async function initStore({ force = false } = {}) {
   loaded = true;
 
   // 2. Seed default data only if needed
-  await seedDefaultData();
+  // New workspaces start empty.
 
   // 3. Auto-refresh cache whenever SyncEngine pulls remote changes
   window.addEventListener("spark:remote-data-updated", async () => {
@@ -365,7 +365,7 @@ export async function deleteCategories({ projects = false, finance = false, supp
 
 export async function clearAll() {
   await wipeAll();
-  await seedDefaultData();
+  // New workspaces start empty.
   await initStore({ force: true });
 }
 

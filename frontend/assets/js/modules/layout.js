@@ -1,3 +1,4 @@
+import { currentUser } from "./identity.js";
 /* ============================================
    Spark ERP — App Layout Module
    Loads reusable sidebar + navbar, wires active
@@ -147,6 +148,9 @@ export async function initLayout() {
   initAppPreloader();
   if (!requireAuth()) return;
   await loadComponent("sidebar-root", "../components/sidebar.html");
+  const adminLink=document.getElementById("adminUsersLink");
+  if(adminLink) adminLink.hidden=currentUser()?.role!=="admin";
+  document.querySelector(".sidebar-logout")?.addEventListener("click",()=>logout());
   await loadComponent("navbar-root", "../components/navbar.html");
   await loadQuickAdd();
   initTheme();

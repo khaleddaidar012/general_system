@@ -1,6 +1,6 @@
 {
-  "name": "Spark Engineering ERP System",
-  "short_name": "Spark ERP",
+  "name": "General System",
+  "short_name": "General System",
   "description": "Offline-First ERP and Management System for Engineering and Construction",
   "start_url": "/pages/dashboard.html",
   "scope": "/",
