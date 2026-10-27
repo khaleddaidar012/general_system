@@ -3,7 +3,7 @@
    CacheFirst for Static Assets, Network/Fallback for API
    ============================================ */
 
-const CACHE_NAME = "general-system-v1";
+const CACHE_NAME = "general-system-v2";
 
 const STATIC_ASSETS = [
   "/pages/admin.html",

@@ -152,6 +152,14 @@ export async function initLayout() {
   if(adminLink) adminLink.hidden=currentUser()?.role!=="admin";
   document.querySelector(".sidebar-logout")?.addEventListener("click",()=>logout());
   await loadComponent("navbar-root", "../components/navbar.html");
+  const username = currentUser()?.username || "";
+  const usernameLabel = document.getElementById("navUsername");
+  if (usernameLabel) usernameLabel.textContent = username;
+  const userButton = document.getElementById("navUser");
+  if (userButton) {
+    userButton.title = username;
+    userButton.setAttribute("aria-label", username);
+  }
   await loadQuickAdd();
   initTheme();
   initSidebar();
