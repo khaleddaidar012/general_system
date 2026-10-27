@@ -103,6 +103,21 @@ document.addEventListener("DOMContentLoaded", async () => {
     } catch (err) {
       if (err && err.message === "offline_no_match") {
         showError("login.errorOfflineNoMatch");
+      } else if (err?.message === "Internal server error") {
+        errorBox.textContent = "تعذر الاتصال ببيانات الحسابات. تأكد من تطبيق migrations على قاعدة D1 وراجع سجلات Cloudflare Functions.";
+        errorBox.hidden = false;
+      } else if (err?.message === "D1 DB binding is required") {
+        errorBox.textContent = "قاعدة البيانات غير مربوطة بهذه النسخة. تأكد من وجود ربط D1 باسم DB ثم أعد النشر.";
+        errorBox.hidden = false;
+      } else if (["network-error", "timeout"].includes(err?.message)) {
+        errorBox.textContent = "تعذر الوصول للسيرفر. تحقق من الاتصال وحاول مرة أخرى.";
+        errorBox.hidden = false;
+      } else if (err?.message?.startsWith("Too many attempts")) {
+        errorBox.textContent = "محاولات دخول كثيرة. حاول بعد 15 دقيقة.";
+        errorBox.hidden = false;
+      } else if (err?.message?.startsWith("Password must contain")) {
+        errorBox.textContent = "كلمة مرور تهيئة الأدمن يجب أن تكون بين 12 و256 حرفًا. حدّث Secret ثم أعد النشر.";
+        errorBox.hidden = false;
       } else {
         showError("login.errorInvalid");
       }
