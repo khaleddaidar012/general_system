@@ -5,6 +5,6 @@ pages_build_output_dir = "./frontend"
 [[d1_databases]]
 binding = "DB"
 database_name = "general-system"
-# Replace with the ID returned by: npx wrangler d1 create general-system
-database_id = "00000000-0000-0000-0000-000000000000"
+# Shared trial database for the General System project.
+database_id = "9bcfba24-b8e1-40d1-8cf9-ec31e83a97bc"
 migrations_dir = "migrations"
